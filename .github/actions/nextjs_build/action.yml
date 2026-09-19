@@ -1,0 +1,26 @@
+name: "NextJS Checkout, Install, Build (prod)"
+description: "Checkout repo, install dependencies, and build NextJS for production"
+inputs:
+  build_env:
+    required: true
+    description: "Build environment"
+runs:
+  using: "composite"
+  steps:
+    - name: Setup Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: "24.x"
+
+    - name: Setup pnpm
+      uses: pnpm/action-setup@v2
+      with:
+        version: 10
+
+    - name: Install the dependencies
+      shell: bash
+      run: pnpm install
+
+    - name: Build the project
+      shell: bash
+      run: pnpm build:${{ inputs.build_env }}

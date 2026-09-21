@@ -17,7 +17,7 @@ on:
         required: true
 env:
   OPS_NAME: gitops
-  OPS_EMAIL: jindadev@gmail.com
+  OPS_EMAIL: gitops@example.com
 
 jobs:
   gitops-cd:

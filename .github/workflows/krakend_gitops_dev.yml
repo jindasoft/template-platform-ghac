@@ -1,0 +1,90 @@
+name: KrakenD Reusable workflow (dev)
+
+on:
+  workflow_call:
+    secrets:
+      token:
+        required: true
+
+env:
+  REGISTRY: ghcr.io
+  ENVIRONMENT: dev
+
+jobs:
+  # ===========================================================
+  # Config Check
+  # ===========================================================
+  config-check:
+    uses: jindasoft/template-platform-ghac/.github/workflows/reusable_krakend_config_check.yml@v1.0.0
+    with:
+      env_name: dev
+
+  # ===========================================================
+  # CI task
+  # ===========================================================
+  gitops-ci:
+    name: GitOps CI
+    runs-on: ubuntu-latest
+    needs: config-check
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      version_tag: ${{ steps.meta.outputs.version }}
+
+    services:
+      docker:
+        image: docker:dind
+        ports:
+          - 2375:2375  # Expose Docker daemon port
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Extract metadata (tags, labels) for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ github.repository }}
+          tags: |
+            type=sha
+
+      - name: Docker Login
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build & Push Docker images
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          file: ./Dockerfile.ops
+          build-args: ENV=${{ env.ENVIRONMENT }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Trivy Security Scan
+        uses: aquasecurity/trivy-action@0.35.0
+        with:
+          image-ref: ${{ steps.meta.outputs.tags }}
+          format: table
+          exit-code: "1"
+          ignore-unfixed: true
+          vuln-type: os,library
+          severity: HIGH,CRITICAL
+
+  # ===========================================================
+  # CD task
+  # ===========================================================
+  gitops-cd:
+    needs: gitops-ci
+    uses: jindasoft/template-platform-ghac/.github/workflows/reusable_gitops_cd.yml@v1.0.0
+    with:
+      ops_repo: jindasoft/template-iac-gitops
+      ops_user: jindadev
+      version_tag: ${{ needs.gitops-ci.outputs.version_tag }}
+    secrets:
+      token: ${{ secrets.token }}

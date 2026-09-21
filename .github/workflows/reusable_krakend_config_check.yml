@@ -1,0 +1,46 @@
+name: KrakenD Config Check
+
+on:
+  workflow_call:
+    inputs:
+      env_name:
+        required: true
+        type: string
+
+jobs:
+  config-check:
+    name: KrakenD Check Configuration
+    runs-on: ubuntu-latest
+    container:
+      image: devopsfaith/krakend:2.9
+    env:
+      FC_ENABLE: 1
+      FC_PARTIALS: ${{ github.workspace }}/config/partials
+      FC_SETTINGS: ${{ github.workspace }}/config/settings/${{ inputs.env_name }}
+      FC_TEMPLATES: ${{ github.workspace }}/config/templates
+      FC_OUT: /tmp/krakend.json
+      KRAKEND_FILE: ${{ github.workspace }}/config/krakend.tmpl
+      KRAKEND_AUDIT_IGNORE: ${{ github.workspace }}/.krakend_audit_ignore
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Display Configuration Variables
+        run: |
+          echo "FC_ENABLE is set to ${{ env.FC_ENABLE }}"
+          echo "Runner working on path $(pwd)"
+
+      - name: Check KrakenD Configuration
+        run: krakend check -tdc $KRAKEND_FILE
+
+      - name: Lint KrakenD Configuration
+        run: krakend check --lint -c $FC_OUT
+
+      - name: Audit KrakenD Configuration
+        run: krakend audit -c $FC_OUT --ignore-file=$KRAKEND_AUDIT_IGNORE --severity CRITICAL,HIGH
+
+      - name: Configuration Check Success Message
+        run: |
+          echo "--------------------------------------------------"
+          echo "------ YOU ROCK! KrakenD config looks good! ------"
+          echo "--------------------------------------------------"

@@ -1,0 +1,86 @@
+name: NextJS Reusable workflow (prod)
+
+on:
+  workflow_call:
+    secrets:
+      ci_token:
+        required: true
+      cd_token:
+        required: true
+      gcp_artifact_token:
+        required: true
+
+env:
+  GCP_ARTIFACT_HOST: <region>-docker.pkg.dev
+  ARTIFACT_REGISTRY: <region>-docker.pkg.dev/<project-id>/<repository>
+
+jobs:
+  # ===========================================================
+  # CI task
+  # ===========================================================
+  gitops-ci:
+    name: GitOps CI
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      version_tag: ${{ steps.meta.outputs.version }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install, Build
+        uses: jindasoft/template-platform-ghac/.github/actions/nextjs_build@v1.0.0
+        with:
+          build_env: prod 
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v1
+        with:
+          credentials_json: '${{ secrets.gcp_artifact_token }}'
+
+      - name: Configure Docker for Google Container Registry
+        run: gcloud auth configure-docker ${{ env.GCP_ARTIFACT_HOST }}
+
+      - name: Extract metadata (tags, labels) for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.ARTIFACT_REGISTRY }}/${{ github.event.repository.name }}
+          tags: |
+            type=ref,event=tag
+            type=raw,value=latest
+
+      - name: Docker Build & Push
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          file: ./Dockerfile.ops
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Trivy Security Scan
+        uses: aquasecurity/trivy-action@0.35.0
+        with:
+          image-ref: ${{ steps.meta.outputs.tags }}
+          format: table
+          exit-code: "1"
+          ignore-unfixed: true
+          vuln-type: os,library
+          severity: HIGH,CRITICAL
+
+  # ===========================================================
+  # CD task
+  # ===========================================================
+  gitops-cd:
+    needs: gitops-ci
+    uses: jindasoft/template-platform-ghac/.github/workflows/reusable_gitops_cd.yml@v1.0.0
+    with:
+      ops_repo: jindasoft/template-iac-gitops-prod
+      ops_user: jindadev
+      version_tag: ${{ needs.gitops-ci.outputs.version_tag }}
+    secrets:
+      token: ${{ secrets.cd_token }}

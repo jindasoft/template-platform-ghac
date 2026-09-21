@@ -1,0 +1,60 @@
+name: GitOps CD Reusable
+
+on:
+  workflow_call:
+    inputs:
+      ops_repo:
+        required: true
+        type: string
+      ops_user:
+        required: true
+        type: string
+      version_tag:
+        required: true
+        type: string
+    secrets:
+      token:
+        required: true
+env:
+  OPS_NAME: gitops
+  OPS_EMAIL: gitops@example.com
+
+jobs:
+  gitops-cd:
+    name: GitOps CD
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout deployment repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.ops_repo }}
+          ref: main
+          persist-credentials: false
+          fetch-depth: 0
+          token: ${{ secrets.token }}
+
+      - name: Setup git credentials
+        run: |
+          git config --global credential.helper store
+          echo "https://${{ inputs.ops_user }}:${{ secrets.token }}@github.com" > ~/.git-credentials
+
+      - name: Setup VERSION_TAG
+        run: echo "VERSION_TAG=${{ inputs.version_tag }}" >> $GITHUB_ENV
+
+      - name: Update image tag in values.yaml
+        run: |
+          git --version
+          git config user.name "${{ env.OPS_NAME }}"
+          git config user.email "${{ env.OPS_EMAIL }}"
+          git pull --rebase
+          sed -i -E "s/tag: .*/tag: ${VERSION_TAG}/g" ${{ github.event.repository.name }}/values.yaml 
+          git add ${{ github.event.repository.name }}/values.yaml
+          git commit -m "${{ github.event.repository.name }}: ${VERSION_TAG}" || echo "No changes to commit"
+
+      - name: push changes
+        uses: ad-m/github-push-action@v0.8.0
+        with:
+          repository: ${{ inputs.ops_repo }}
+          branch: main
+          github_token: ${{ secrets.token }}

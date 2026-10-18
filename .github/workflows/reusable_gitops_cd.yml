@@ -1,46 +1,62 @@
 name: GitOps CD Reusable
 
+env:
+  OPS_USER: gitops
+  OPS_NAME: gitops
+  OPS_EMAIL: gitops@jindasoft.dev
+
 on:
   workflow_call:
     inputs:
-      ops_repo:
+      gitops_repo:
         required: true
         type: string
-      ops_user:
-        required: true
-        type: string
+        description: "GitOps repository to deploy"
       version_tag:
         required: true
         type: string
+        description: "Version tag to deploy"
     secrets:
-      token:
+      cd_token:
         required: true
-env:
-  OPS_NAME: gitops
-  OPS_EMAIL: gitops@example.com
-
+        description: "GitHub token for deploying to the GitOps repository"
 jobs:
   gitops-cd:
     name: GitOps CD
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
+      - name: Validate deployment repository
+        env:
+          GITOPS_REPO: ${{ inputs.gitops_repo }}
+        run: |
+          if [[ ! "$GITOPS_REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+            echo "gitops_repo must use the owner/repository format"
+            exit 1
+          fi
+
       - name: Checkout deployment repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
-          repository: ${{ inputs.ops_repo }}
+          repository: ${{ inputs.gitops_repo }}
           ref: main
           persist-credentials: false
           fetch-depth: 0
-          token: ${{ secrets.token }}
+          token: ${{ secrets.cd_token }}
 
       - name: Setup git credentials
+        env:
+          CD_TOKEN: ${{ secrets.cd_token }}
         run: |
-          git config --global credential.helper store
-          echo "https://${{ inputs.ops_user }}:${{ secrets.token }}@github.com" > ~/.git-credentials
+          credentials_file="${RUNNER_TEMP}/gitops-cd-credentials"
+          umask 077
+          git config --local credential.helper "store --file=${credentials_file}"
+          printf 'protocol=https\nhost=github.com\nusername=${{ env.OPS_USER }}\npassword=%s\n\n' "$CD_TOKEN" | git credential approve
 
       - name: Setup VERSION_TAG
-        run: echo "VERSION_TAG=${{ inputs.version_tag }}" >> $GITHUB_ENV
+        env:
+          VERSION_TAG: ${{ inputs.version_tag }}
+        run: printf 'VERSION_TAG=%s\n' "$VERSION_TAG" >> "$GITHUB_ENV"
 
       - name: Update image tag in values.yaml
         run: |
@@ -48,13 +64,17 @@ jobs:
           git config user.name "${{ env.OPS_NAME }}"
           git config user.email "${{ env.OPS_EMAIL }}"
           git pull --rebase
-          sed -i -E "s/tag: .*/tag: ${VERSION_TAG}/g" ${{ github.event.repository.name }}/values.yaml 
+          sed -i -E "s/tag: .*/tag: ${VERSION_TAG}/g" ${{ github.event.repository.name }}/values.yaml
           git add ${{ github.event.repository.name }}/values.yaml
-          git commit -m "${{ github.event.repository.name }}: ${VERSION_TAG}" || echo "No changes to commit"
+          if ! git diff --cached --quiet; then
+            git commit -m "${{ github.event.repository.name }}: ${VERSION_TAG}"
+          fi
 
-      - name: push changes
-        uses: ad-m/github-push-action@v0.8.0
-        with:
-          repository: ${{ inputs.ops_repo }}
-          branch: main
-          github_token: ${{ secrets.token }}
+      - name: Push changes
+        run: git push origin HEAD:main
+
+      - name: Cleanup git credentials
+        if: ${{ always() }}
+        run: |
+          git config --local --unset-all credential.helper || true
+          rm -f "${RUNNER_TEMP}/gitops-cd-credentials"

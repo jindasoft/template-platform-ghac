@@ -1,13 +1,24 @@
 name: NextJS Reusable workflow (dev)
 
-on:
-  workflow_call:
-    secrets:
-      token:
-        required: true
-
 env:
   REGISTRY: ghcr.io
+
+on:
+  workflow_call:
+    inputs:
+      gitops_repo:
+        required: true
+        type: string
+        description: "GitOps repository to deploy"
+      environment_name:
+        required: false
+        type: string
+        default: development
+        description: "GitHub Environment containing build variables"
+    secrets:
+      cd_token:
+        required: true
+        description: "GitHub token for deploying to the GitOps repository"
 
 jobs:
   # ===========================================================
@@ -15,7 +26,8 @@ jobs:
   # ===========================================================
   gitops-ci:
     name: GitOps CI
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    environment: ${{ inputs.environment_name }}
     permissions:
       contents: read
       packages: write
@@ -24,56 +36,64 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install, Build
-        uses: jindasoft/template-platform-ghac/.github/actions/nextjs_build@v1.0.0
+        uses: jindasoft/jinda-platform-ghac/.github/actions/nextjs_build@main
         with:
-          build_env: dev 
+          vars_json: ${{ toJSON(vars) }}
 
       - name: Extract metadata (tags, labels) for Docker
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ${{ env.REGISTRY }}/${{ github.repository }}
           tags: |
-            type=sha
+            type=sha,priority=300
+            type=raw,value=dev-latest,priority=200
 
       - name: Docker Login
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build & Push Docker images
-        uses: docker/build-push-action@v4
+      - name: Build Docker images
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: ./Dockerfile.ops
-          push: true
+          load: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
       - name: Trivy Security Scan
         uses: aquasecurity/trivy-action@0.35.0
         with:
-          image-ref: ${{ steps.meta.outputs.tags }}
+          image-ref: ${{ env.REGISTRY }}/${{ github.repository }}:${{ steps.meta.outputs.version }}
           format: table
           exit-code: "1"
           ignore-unfixed: true
           vuln-type: os,library
           severity: HIGH,CRITICAL
 
+      - name: Push Docker images
+        env:
+          IMAGE_TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          while IFS= read -r tag; do
+            [ -n "$tag" ] && docker push "$tag"
+          done <<< "$IMAGE_TAGS"
+
   # ===========================================================
   # CD task
   # ===========================================================
   gitops-cd:
     needs: gitops-ci
-    uses: jindasoft/template-platform-ghac/.github/workflows/reusable_gitops_cd.yml@v1.0.0
+    uses: jindasoft/jinda-platform-ghac/.github/workflows/reusable_gitops_cd.yml@main
     with:
-      ops_repo: jindasoft/template-iac-gitops
-      ops_user: jindadev
+      gitops_repo: ${{ inputs.gitops_repo }}
       version_tag: ${{ needs.gitops-ci.outputs.version_tag }}
     secrets:
-      token: ${{ secrets.token }}
+      cd_token: ${{ secrets.cd_token }}

@@ -1,18 +1,32 @@
 name: Golang Reusable workflow (prod)
 
+env:
+  GCP_ARTIFACT_HOST: <REGION>-docker.pkg.dev
+
 on:
   workflow_call:
+    inputs:
+      gitops_repo:
+        required: true
+        type: string
+        description: "GitOps repository to deploy"
+      artifact_registry:
+        required: true
+        type: string
+        description: "GCP Artifact Registry for storing Docker images"
     secrets:
       ci_token:
         required: true
+        description: "GitHub token for fetching private Go modules"
       cd_token:
         required: true
-      gcp_artifact_token:
+        description: "GitHub token for deploying to the GitOps repository"
+      gcp_workload_identity_provider:
         required: true
-        
-env:
-  GCP_ARTIFACT_HOST: <region>-docker.pkg.dev
-  ARTIFACT_REGISTRY: <region>-docker.pkg.dev/<project-id>/<repository>
+        description: "GCP Workload Identity Provider for pushing to Artifact Registry"
+      gcp_service_account:
+        required: true
+        description: "GCP Service Account for pushing to Artifact Registry"
 
 jobs:
   # ===========================================================
@@ -20,68 +34,76 @@ jobs:
   # ===========================================================
   gitops-ci:
     name: GitOps CI
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       packages: write
+      id-token: write
     outputs:
       version_tag: ${{ steps.meta.outputs.version }}
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Golang CI
-        uses: jindasoft/template-platform-ghac/.github/actions/golang_build@v1.0.0
+        uses: jindasoft/jinda-platform-ghac/.github/actions/golang_build@main
         with:
-          cgo_enabled: 0
-          token: ${{ secrets.ci_token }}
+          ci_token: ${{ secrets.ci_token }}
 
       - name: Authenticate to Google Cloud
-        uses: google-github-actions/auth@v1
+        uses: google-github-actions/auth@v3
         with:
-          credentials_json: '${{ secrets.gcp_artifact_token }}'
+          workload_identity_provider: '${{ secrets.gcp_workload_identity_provider }}'
+          service_account: '${{ secrets.gcp_service_account }}'
 
       - name: Configure Docker for Google Container Registry
         run: gcloud auth configure-docker ${{ env.GCP_ARTIFACT_HOST }}
 
       - name: Extract metadata (tags, labels) for Docker
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
-          images: ${{ env.ARTIFACT_REGISTRY }}/${{ github.event.repository.name }}
+          images: ${{ env.GCP_ARTIFACT_HOST }}/${{ inputs.artifact_registry }}/${{ github.event.repository.name }}
           tags: |
-            type=ref,event=tag
-            type=raw,value=latest
+            type=ref,event=tag,priority=300
+            type=raw,value=latest,priority=200
 
-      - name: Docker Build & Push
-        uses: docker/build-push-action@v4
+      - name: Build Docker images
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: ./Dockerfile.ops
-          push: true
+          load: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
       - name: Trivy Security Scan
         uses: aquasecurity/trivy-action@0.35.0
         with:
-          image-ref: ${{ env.ARTIFACT_REGISTRY }}/${{ github.event.repository.name }}:${{ steps.meta.outputs.version }}
+          image-ref: ${{ env.GCP_ARTIFACT_HOST }}/${{ inputs.artifact_registry }}/${{ github.event.repository.name }}:${{ steps.meta.outputs.version }}
           format: table
           exit-code: "1"
           ignore-unfixed: true
           vuln-type: os,library
           severity: HIGH,CRITICAL
 
+      - name: Push Docker images
+        env:
+          IMAGE_TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          while IFS= read -r tag; do
+            [ -n "$tag" ] && docker push "$tag"
+          done <<< "$IMAGE_TAGS"
+
   # ===========================================================
   # CD task
   # ===========================================================
   gitops-cd:
     needs: gitops-ci
-    uses: jindasoft/template-platform-ghac/.github/workflows/reusable_gitops_cd.yml@v1.0.0
+    uses: jindasoft/jinda-platform-ghac/.github/workflows/reusable_gitops_cd.yml@main
     with:
-      ops_repo: jindasoft/template-iac-gitops-prod
-      ops_user: jindadev
+      gitops_repo: ${{ inputs.gitops_repo }}
       version_tag: ${{ needs.gitops-ci.outputs.version_tag }}
     secrets:
-      token: ${{ secrets.cd_token }}
+      cd_token: ${{ secrets.cd_token }}

@@ -1,26 +1,57 @@
-name: "NextJS Checkout, Install, Build (prod)"
-description: "Checkout repo, install dependencies, and build NextJS for production"
+name: "NextJS Checkout, Install, Build"
+description: "Checkout repo, install dependencies, and build NextJS"
 inputs:
-  build_env:
-    required: true
-    description: "Build environment"
+  vars_json:
+    required: false
+    default: "{}"
+    description: "GitHub Environment variables"
 runs:
   using: "composite"
   steps:
+    - name: Setup pnpm
+      uses: pnpm/action-setup@v5
+
     - name: Setup Node.js
-      uses: actions/setup-node@v3
+      uses: actions/setup-node@v6
       with:
         node-version: "24.x"
-
-    - name: Setup pnpm
-      uses: pnpm/action-setup@v2
-      with:
-        version: 10
+        cache: pnpm
+        cache-dependency-path: pnpm-lock.yaml
 
     - name: Install the dependencies
       shell: bash
-      run: pnpm install
+      run: pnpm install --frozen-lockfile
+
+    - name: Load build environment variables
+      shell: bash
+      env:
+        ACTION_VARS_JSON: ${{ inputs.vars_json }}
+      run: |
+        printf '%s' "$ACTION_VARS_JSON" | jq -er '
+          if type != "object"
+            then error("vars_json must be a JSON object")
+            else .
+            end
+          | [
+            to_entries[]
+            | if (.key | test("^[A-Za-z_][A-Za-z0-9_]*$") | not)
+                or (.key | startswith("GITHUB_"))
+                or (.key | startswith("RUNNER_"))
+                or .key == "NODE_OPTIONS"
+              then error("Invalid or reserved build variable name: " + .key)
+              else .
+              end
+            | if (.value | type) != "string"
+              then error("Build variable " + .key + " must be a string")
+              elif (.value | test("[\r\n\u0000]"))
+              then error("Build variable " + .key + " must be a single-line string without NUL characters")
+              else .
+              end
+            | "\(.key)=\(.value)"
+          ]
+          | join("\n")
+        ' >> "$GITHUB_ENV"
 
     - name: Build the project
       shell: bash
-      run: pnpm build:${{ inputs.build_env }}
+      run: pnpm build
